@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PO Splitter</title>
+<title>แยกใบสั่งซื้อ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -52,23 +52,23 @@
 </head>
 <body>
 <main>
-  <h1>Purchase Suggestion Splitter</h1>
-  <p class="sub">Splits a BigSeller Purchase Suggestion export into one Excel file per product (SKU without its last two parts: model and color), with product images embedded.</p>
+  <h1>แยกไฟล์ "คำแนะนำการสั่งซื้อ"</h1>
+  <p class="sub">แยกไฟล์ Export "คำแนะนำการสั่งซื้อ" จาก BigSeller เป็นไฟล์สรุป Excel ทีละสินค้า (SKU ที่ตัดรุ่นและสีออก) พร้อมรูปสินค้า และไฟล์สำหรับนำเข้า "การวางแผนสั่งซื้อ" ใช้ได้ทั้ง BigSeller ภาษาไทยและอังกฤษ</p>
 
   <div id="drop">
-    <strong>Drop the .xlsx export here</strong>
-    <span>or click to choose a file</span>
+    <strong>ลากไฟล์ .xlsx ที่ Export มาวางที่นี่</strong>
+    <span>หรือคลิกเพื่อเลือกไฟล์</span>
     <input id="file" type="file" accept=".xlsx,.xls" hidden>
   </div>
 
   <div id="result" class="hidden">
     <div class="bar">
       <div class="grow" id="summary"></div>
-      <button class="primary" id="dlAll">Download all (.zip)</button>
+      <button class="primary" id="dlAll">ดาวน์โหลดทั้งหมด (.zip)</button>
     </div>
     <div id="planned" class="hidden"></div>
     <table>
-      <thead><tr><th>Prefix</th><th class="num">SKUs</th><th class="num">Proposed</th><th>SKU names</th><th></th></tr></thead>
+      <thead><tr><th>กลุ่ม</th><th class="num">SKU</th><th class="num">จำนวนสั่ง</th><th>รายการ SKU</th><th></th></tr></thead>
       <tbody id="groups"></tbody>
     </table>
   </div>
@@ -127,11 +127,11 @@ async function loadFile(file) {
   try {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
     let data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-    if (!data.length) throw new Error('The sheet has no data rows.');
+    if (!data.length) throw new Error('ไม่มีข้อมูลในชีต');
     const lang = 'ชื่อSKU' in data[0] ? 'th' : 'en';
     if (lang === 'th') data = data.map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [TH_HEADERS[k] ?? k, v])));
     const missing = COLUMNS.map(c => c.header).filter(h => !(h in data[0]));
-    if (missing.length) throw new Error('Missing columns: ' + missing.map(h => lang === 'th' ? EN_TO_TH[h] : h).join(', '));
+    if (missing.length) throw new Error('ไม่พบคอลัมน์: ' + missing.map(h => lang === 'th' ? EN_TO_TH[h] : h).join(', '));
     bigsellerLang = lang;
     // BigSeller's suggestion ignores quantities already sitting in purchase plans, so order only the rest.
     rows = data.filter(r => String(r['SKU Name']).trim()).map(r => ({
@@ -147,7 +147,7 @@ async function loadFile(file) {
     render();
   } catch (err) {
     $('result').classList.add('hidden');
-    setStatus('Could not read file: ' + err.message, true);
+    setStatus('อ่านไฟล์ไม่ได้: ' + err.message, true);
   }
 }
 
@@ -184,14 +184,14 @@ function render() {
   const groups = groupRows();
   const total = groups.reduce((n, [, l]) => n + l.length, 0);
   const skipped = rows.length - total;
-  $('summary').textContent = `${total} SKUs → ${groups.length} groups` + (skipped ? ` (${skipped} with nothing left to order skipped)` : '')
-    + ` · BigSeller in ${bigsellerLang === 'th' ? 'Thai' : 'English'}`;
+  $('summary').textContent = `${total} SKU → ${groups.length} กลุ่ม` + (skipped ? ` (ข้าม ${skipped} SKU ที่ไม่ต้องสั่งเพิ่ม)` : '')
+    + ` · BigSeller ภาษา${bigsellerLang === 'th' ? 'ไทย' : 'อังกฤษ'}`;
   renderPlanned();
   const tbody = $('groups');
   tbody.innerHTML = '';
   for (const [prefix, list] of groups) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><strong></strong></td><td class="num">${list.length}</td><td class="num">${proposedOf(list)}</td><td class="skus"></td><td class="actions"><button class="summary">Summary</button><button class="plan">Purchase plan</button></td>`;
+    tr.innerHTML = `<td><strong></strong></td><td class="num">${list.length}</td><td class="num">${proposedOf(list)}</td><td class="skus"></td><td class="actions"><button class="summary">ไฟล์สรุป</button><button class="plan">ไฟล์แผนสั่งซื้อ</button></td>`;
     tr.querySelector('strong').textContent = prefix;
     tr.querySelector('.skus').textContent = list.map(r => r['SKU Name']).join(', ');
     tr.querySelector('.summary').onclick = e => run(e.target, async () => {
@@ -214,11 +214,11 @@ function renderPlanned() {
   box.classList.toggle('hidden', !list.length);
   if (!list.length) return;
   box.innerHTML = '<strong></strong><div></div><ul></ul>';
-  box.querySelector('strong').textContent = `${list.length} SKUs already have quantity in existing purchase plans.`;
-  box.querySelector('div').textContent = 'Check Purchase → Purchase Plan and follow up in LINE on any plan not yet confirmed. Proposed Qty already has the planned quantity taken off.';
+  box.querySelector('strong').textContent = `${list.length} SKU มีจำนวนอยู่ใน "การวางแผนสั่งซื้อ" แล้ว`;
+  box.querySelector('div').textContent = 'ให้เช็ก "การสั่งซื้อ" → "การวางแผนสั่งซื้อ" และติดตามในกลุ่ม LINE สำหรับแผนที่ยังไม่ยืนยัน จำนวนสั่ง (Proposed Qty) หักจำนวนที่วางแผนแล้วออกให้แล้ว';
   for (const r of list) {
     const li = document.createElement('li');
-    li.textContent = `${String(r['SKU Name']).trim()}: planned ${toNum(r['Planned Qty'])}, still to order ${Math.max(0, r['Proposed Qty'])}`;
+    li.textContent = `${String(r['SKU Name']).trim()}: วางแผนแล้ว ${toNum(r['Planned Qty'])}, ต้องสั่งเพิ่ม ${Math.max(0, r['Proposed Qty'])}`;
     box.querySelector('ul').appendChild(li);
   }
 }
@@ -278,7 +278,7 @@ async function buildWorkbook(prefix, list, progress) {
   let done = 0;
   const images = await mapLimit(list, 8, async r => {
     const img = await loadImage(String(r['Image Link']).trim());
-    progress(`images ${++done}/${list.length}`);
+    progress(`รูป ${++done}/${list.length}`);
     return img;
   });
 
@@ -397,8 +397,8 @@ function saveBlob(blob, name) {
 async function run(btn, task) {
   const buttons = document.querySelectorAll('button');
   buttons.forEach(b => b.disabled = true);
-  try { await task(); setStatus('Done.'); }
-  catch (err) { setStatus('Failed: ' + err.message, true); }
+  try { await task(); setStatus('เสร็จแล้ว'); }
+  catch (err) { setStatus('ไม่สำเร็จ: ' + err.message, true); }
   finally { buttons.forEach(b => b.disabled = false); }
 }
 
@@ -406,11 +406,11 @@ $('dlAll').onclick = e => run(e.target, async () => {
   const groups = groupRows();
   const zip = new JSZip();
   for (const [i, [prefix, list]] of groups.entries()) {
-    const buf = await buildWorkbook(prefix, list, s => setStatus(`File ${i + 1}/${groups.length} (${prefix}) ${s}`));
+    const buf = await buildWorkbook(prefix, list, s => setStatus(`ไฟล์ ${i + 1}/${groups.length} (${prefix}) ${s}`));
     zip.file('Summary/' + fileNameFor(prefix), buf);
     zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(prefix, list, bigsellerLang));
   }
-  setStatus('Zipping…');
+  setStatus('กำลังรวมไฟล์ zip…');
   saveBlob(await zip.generateAsync({ type: 'blob' }), safeName(sourceName) + '_split.zip');
 });
 </script>
