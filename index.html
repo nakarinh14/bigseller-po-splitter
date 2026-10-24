@@ -11,10 +11,12 @@
   :root {
     --bg: #f6f6f3; --surface: #fff; --text: #1d1d1b; --muted: #6b6b66;
     --line: #e2e2dc; --accent: #2f6b4f; --accent-text: #fff; --err: #b3261e;
+    --warn: #c98a00; --warn-bg: #fff6dc;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #161615; --surface: #1f1f1d; --text: #ecece8; --muted: #9a9a93;
-      --line: #33332f; --accent: #6fbf95; --accent-text: #0f1a14; --err: #f2867e; }
+      --line: #33332f; --accent: #6fbf95; --accent-text: #0f1a14; --err: #f2867e;
+      --warn: #e0b040; --warn-bg: #2e2716; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -43,6 +45,9 @@
   #status { margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 1.5em; }
   #status.err { color: var(--err); }
   .hidden { display: none; }
+  #planned { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px;
+    background: var(--warn-bg); font-size: 14px; }
+  #planned ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -61,6 +66,7 @@
       <div class="grow" id="summary"></div>
       <button class="primary" id="dlAll">Download all (.zip)</button>
     </div>
+    <div id="planned" class="hidden"></div>
     <table>
       <thead><tr><th>Prefix</th><th class="num">SKUs</th><th class="num">Proposed</th><th>SKU names</th><th></th></tr></thead>
       <tbody id="groups"></tbody>
@@ -79,6 +85,7 @@ const COLUMNS = [
   { header: 'SKU Name', label: 'SKU Name\nSKU名称', width: 28 },
   { header: 'Title', label: 'Title\n商品标题', width: 50 },
   { header: 'Proposed Qty', label: 'Proposed Qty\n建议采购量', width: 13, num: true },
+  { header: 'Planned Qty', label: 'Planned Qty\n已计划数量', width: 13, num: true, flag: true },
   { header: 'Available', label: 'Available\n可用库存', width: 11, num: true },
   { header: 'On The Way', label: 'On The Way\n在途库存', width: 12, num: true },
   { header: 'Forecasted Daily Sales', label: 'Forecasted Daily Sales\n预测日销量', width: 14, num: true },
@@ -88,6 +95,7 @@ const TH_HEADERS = {
   'ชื่อSKU': 'SKU Name',
   'หัวข้อ': 'Title',
   'จำนวนที่แนะนำ': 'Proposed Qty',
+  'จำนวนการวางแผน': 'Planned Qty',
   'สต็อกพร้อมขาย': 'Available',
   'ระหว่างทาง': 'On The Way',
   'การคาดการณ์ยอดขายรายวัน': 'Forecasted Daily Sales',
@@ -125,7 +133,12 @@ async function loadFile(file) {
     const missing = COLUMNS.map(c => c.header).filter(h => !(h in data[0]));
     if (missing.length) throw new Error('Missing columns: ' + missing.map(h => lang === 'th' ? EN_TO_TH[h] : h).join(', '));
     bigsellerLang = lang;
-    rows = data.filter(r => String(r['SKU Name']).trim());
+    // BigSeller's suggestion ignores quantities already sitting in purchase plans, so order only the rest.
+    rows = data.filter(r => String(r['SKU Name']).trim()).map(r => ({
+      ...r,
+      'Suggested Qty': r['Proposed Qty'],
+      'Proposed Qty': (toNum(r['Proposed Qty']) || 0) - (toNum(r['Planned Qty']) || 0),
+    }));
     sourceName = file.name.replace(/\.[^.]+$/, '');
     const d = new Date();
     loadDate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -157,7 +170,7 @@ const toNum = v => {
 function groupRows() {
   const groups = new Map();
   for (const r of rows) {
-    if (!toNum(r['Proposed Qty'])) continue; // nothing to order
+    if (!(r['Proposed Qty'] > 0)) continue; // nothing left to order once planned qty is taken off
     const p = prefixOf(r['SKU Name']);
     if (!groups.has(p)) groups.set(p, []);
     groups.get(p).push(r);
@@ -171,8 +184,9 @@ function render() {
   const groups = groupRows();
   const total = groups.reduce((n, [, l]) => n + l.length, 0);
   const skipped = rows.length - total;
-  $('summary').textContent = `${total} SKUs → ${groups.length} groups` + (skipped ? ` (${skipped} with Proposed Qty 0 skipped)` : '')
+  $('summary').textContent = `${total} SKUs → ${groups.length} groups` + (skipped ? ` (${skipped} with nothing left to order skipped)` : '')
     + ` · BigSeller in ${bigsellerLang === 'th' ? 'Thai' : 'English'}`;
+  renderPlanned();
   const tbody = $('groups');
   tbody.innerHTML = '';
   for (const [prefix, list] of groups) {
@@ -190,6 +204,23 @@ function render() {
     tbody.appendChild(tr);
   }
   $('result').classList.remove('hidden');
+}
+
+// SKUs with quantity already in a purchase plan, including ones skipped above: those plans
+// may still be waiting for confirmation in LINE.
+function renderPlanned() {
+  const list = rows.filter(r => toNum(r['Planned Qty']) > 0);
+  const box = $('planned');
+  box.classList.toggle('hidden', !list.length);
+  if (!list.length) return;
+  box.innerHTML = '<strong></strong><div></div><ul></ul>';
+  box.querySelector('strong').textContent = `${list.length} SKUs already have quantity in existing purchase plans.`;
+  box.querySelector('div').textContent = 'Check Purchase → Purchase Plan and follow up in LINE on any plan not yet confirmed. Proposed Qty already has the planned quantity taken off.';
+  for (const r of list) {
+    const li = document.createElement('li');
+    li.textContent = `${String(r['SKU Name']).trim()}: planned ${toNum(r['Planned Qty'])}, still to order ${Math.max(0, r['Proposed Qty'])}`;
+    box.querySelector('ul').appendChild(li);
+  }
 }
 
 // File names safe on Windows and macOS: no whitespace, no characters Windows forbids,
@@ -276,6 +307,11 @@ async function buildWorkbook(prefix, list, progress) {
     const row = ws.addRow(values);
     row.height = ROW_HEIGHT_PT;
     row.alignment = { vertical: 'middle', wrapText: true };
+    COLUMNS.forEach((c, ci) => {
+      if (c.flag && toNum(r[c.header]) > 0) {
+        row.getCell(ci + 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE699' } };
+      }
+    });
 
     const url = String(r['Image Link']).trim();
     if (images[i]) {
