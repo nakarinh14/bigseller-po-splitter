@@ -73,19 +73,34 @@
 const COLUMNS = [
   // Image goes in column A: previewers that place pictures by absolute offset (LINE, Quick Look)
   // measure column widths differently from Excel, so only the first column lines up everywhere.
-  { header: 'Image Link', width: 16, image: true },
-  { header: 'SKU Name', width: 28 },
-  { header: 'Title', width: 50 },
-  { header: 'Proposed Qty', width: 13, num: true },
-  { header: 'Available', width: 11, num: true },
-  { header: 'On The Way', width: 12, num: true },
-  { header: 'Forecasted Daily Sales', width: 14, num: true },
+  // `header` is the export column read; `label` is the summary's heading, English over Simplified
+  // Chinese for the readers in the LINE group, whatever language BigSeller is in.
+  { header: 'Image Link', label: 'Image\n图片', width: 16, image: true },
+  { header: 'SKU Name', label: 'SKU Name\nSKU名称', width: 28 },
+  { header: 'Title', label: 'Title\n商品标题', width: 50 },
+  { header: 'Proposed Qty', label: 'Proposed Qty\n建议采购量', width: 13, num: true },
+  { header: 'Available', label: 'Available\n可用库存', width: 11, num: true },
+  { header: 'On The Way', label: 'On The Way\n在途库存', width: 12, num: true },
+  { header: 'Forecasted Daily Sales', label: 'Forecasted Daily Sales\n预测日销量', width: 14, num: true },
 ];
+// BigSeller exports in its UI language. Thai headers are mapped to the English names used throughout.
+const TH_HEADERS = {
+  'ชื่อSKU': 'SKU Name',
+  'หัวข้อ': 'Title',
+  'จำนวนที่แนะนำ': 'Proposed Qty',
+  'สต็อกพร้อมขาย': 'Available',
+  'ระหว่างทาง': 'On The Way',
+  'การคาดการณ์ยอดขายรายวัน': 'Forecasted Daily Sales',
+  'ลิงก์รูปภาพ': 'Image Link',
+  'ชื่อคลังสินค้า': 'Warehouse',
+};
+const EN_TO_TH = Object.fromEntries(Object.entries(TH_HEADERS).map(([th, en]) => [en, th]));
 const IMG_PX = 100;          // rendered image size in Excel
 const ROW_HEIGHT_PT = 80;    // ~ IMG_PX + padding, in points
 
 let rows = [];               // parsed rows: { 'SKU Name': ..., ... }
 let sourceName = 'purchase-suggestion';
+let bigsellerLang = 'en';     // language of the export, reused for the purchase plan import headers
 let loadDate = '';            // YYYYMMDD of the upload, part of each group's plan key
 const imageCache = new Map(); // url -> Promise<base64 jpeg | null>
 
@@ -103,10 +118,13 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); e.dataTr
 async function loadFile(file) {
   try {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-    const missing = COLUMNS.map(c => c.header).filter(h => data.length && !(h in data[0]));
+    let data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
     if (!data.length) throw new Error('The sheet has no data rows.');
-    if (missing.length) throw new Error('Missing columns: ' + missing.join(', '));
+    const lang = 'ชื่อSKU' in data[0] ? 'th' : 'en';
+    if (lang === 'th') data = data.map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [TH_HEADERS[k] ?? k, v])));
+    const missing = COLUMNS.map(c => c.header).filter(h => !(h in data[0]));
+    if (missing.length) throw new Error('Missing columns: ' + missing.map(h => lang === 'th' ? EN_TO_TH[h] : h).join(', '));
+    bigsellerLang = lang;
     rows = data.filter(r => String(r['SKU Name']).trim());
     sourceName = file.name.replace(/\.[^.]+$/, '');
     const d = new Date();
@@ -153,7 +171,8 @@ function render() {
   const groups = groupRows();
   const total = groups.reduce((n, [, l]) => n + l.length, 0);
   const skipped = rows.length - total;
-  $('summary').textContent = `${total} SKUs → ${groups.length} groups` + (skipped ? ` (${skipped} with Proposed Qty 0 skipped)` : '');
+  $('summary').textContent = `${total} SKUs → ${groups.length} groups` + (skipped ? ` (${skipped} with Proposed Qty 0 skipped)` : '')
+    + ` · BigSeller in ${bigsellerLang === 'th' ? 'Thai' : 'English'}`;
   const tbody = $('groups');
   tbody.innerHTML = '';
   for (const [prefix, list] of groups) {
@@ -166,7 +185,7 @@ function render() {
       saveBlob(new Blob([buf]), fileNameFor(prefix));
     });
     tr.querySelector('.plan').onclick = e => run(e.target, async () => {
-      saveBlob(new Blob([await buildPlanWorkbook(prefix, list)]), planFileName(prefix));
+      saveBlob(new Blob([await buildPlanWorkbook(prefix, list, bigsellerLang)]), planFileName(prefix));
     });
     tbody.appendChild(tr);
   }
@@ -234,12 +253,12 @@ async function buildWorkbook(prefix, list, progress) {
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(planKey(prefix).replace(/[\\/?*:[\]]/g, '_').slice(0, 31), { views: [{ state: 'frozen', ySplit: 1 }] });
-  ws.columns = COLUMNS.map(c => ({ header: c.header, key: c.header, width: c.width }));
+  ws.columns = COLUMNS.map(c => ({ header: c.label, key: c.header, width: c.width }));
   const head = ws.getRow(1);
   head.font = { bold: true };
   head.alignment = { vertical: 'middle', wrapText: true };
   head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFEFEA' } };
-  head.height = 30;
+  head.height = 48;
 
   const imageIds = new Map(); // image data -> workbook image id, so identical photos are stored once
   const frames = [];          // absolute EMU position/size of each picture, in insertion order
@@ -271,7 +290,7 @@ async function buildWorkbook(prefix, list, progress) {
         size: IMG_PX * EMU_PX,
       });
     } else if (url) {
-      row.getCell(imgCol + 1).value = { text: 'Image unavailable', hyperlink: url };
+      row.getCell(imgCol + 1).value = { text: 'Image unavailable / 图片无法显示', hyperlink: url };
     }
   });
   return fixPictureFrames(await wb.xlsx.writeBuffer(), frames);
@@ -295,22 +314,24 @@ async function fixPictureFrames(buf, frames) {
 }
 
 // BigSeller "Import purchase plan" template: rows sharing a Temporary ID become one plan,
-// so each group's file holds a single plan with ID 1.
+// so each group's file holds a single plan with ID 1. BigSeller expects the headers in the
+// language its UI is set to; the Thai ones are copied verbatim from its template, leading spaces included.
 const PLAN_COLUMNS = [
-  { key: 'id', header: '*Temporary ID (Required)', width: 25, required: true },
-  { key: 'sku', header: '*SKU Name (Required)', width: 30, required: true },
-  { key: 'qty', header: '*Planned Purchase Quantity (Required)', width: 38, required: true },
-  { key: 'supplier', header: 'Supplier', width: 25 },
-  { key: 'warehouse', header: 'Receiving Warehouse', width: 25 },
-  { key: 'notes', header: 'Purchase Plan Notes', width: 28 },
-  { key: 'date', header: 'Expected Delivery Date', width: 25 },
+  { key: 'id', header: { en: '*Temporary ID (Required)', th: '*หมายเลขชั่วคราว(Required)' }, width: 25, required: true },
+  { key: 'sku', header: { en: '*SKU Name (Required)', th: '*เลข SKU(Required)' }, width: 30, required: true },
+  { key: 'qty', header: { en: '*Planned Purchase Quantity (Required)', th: '*จำนวนแผนการสั่งซื้อ(Required)' }, width: 38, required: true },
+  { key: 'supplier', header: { en: 'Supplier', th: ' Supplier' }, width: 25 },
+  { key: 'warehouse', header: { en: 'Receiving Warehouse', th: 'คลังสินค้าที่รับ' }, width: 25 },
+  { key: 'notes', header: { en: 'Purchase Plan Notes', th: 'หมายเหตุการวางแผนสั่งซื้อ' }, width: 28 },
+  { key: 'date', header: { en: 'Expected Delivery Date', th: ' วันที่คาดจะมาถึง' }, width: 25 },
 ];
+
 const blankDash = v => { const s = String(v ?? '').trim(); return s === '--' ? '' : s; };
 
-function buildPlanWorkbook(prefix, list) {
+function buildPlanWorkbook(prefix, list, lang) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('sheet1');
-  ws.columns = PLAN_COLUMNS.map(c => ({ key: c.key, header: c.header, width: c.width }));
+  ws.columns = PLAN_COLUMNS.map(c => ({ key: c.key, header: c.header[lang], width: c.width }));
   ws.getRow(1).height = 30;
   PLAN_COLUMNS.forEach((c, i) => {
     ws.getCell(1, i + 1).font = { bold: true, color: { argb: c.required ? 'FFFF0000' : 'FF000000' } };
@@ -351,7 +372,7 @@ $('dlAll').onclick = e => run(e.target, async () => {
   for (const [i, [prefix, list]] of groups.entries()) {
     const buf = await buildWorkbook(prefix, list, s => setStatus(`File ${i + 1}/${groups.length} (${prefix}) ${s}`));
     zip.file('Summary/' + fileNameFor(prefix), buf);
-    zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(prefix, list));
+    zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(prefix, list, bigsellerLang));
   }
   setStatus('Zipping…');
   saveBlob(await zip.generateAsync({ type: 'blob' }), safeName(sourceName) + '_split.zip');
