@@ -86,6 +86,7 @@ const ROW_HEIGHT_PT = 80;    // ~ IMG_PX + padding, in points
 
 let rows = [];               // parsed rows: { 'SKU Name': ..., ... }
 let sourceName = 'purchase-suggestion';
+let loadDate = '';            // YYYYMMDD of the upload, part of each group's plan key
 const imageCache = new Map(); // url -> Promise<base64 jpeg | null>
 
 const $ = id => document.getElementById(id);
@@ -108,6 +109,8 @@ async function loadFile(file) {
     if (missing.length) throw new Error('Missing columns: ' + missing.join(', '));
     rows = data.filter(r => String(r['SKU Name']).trim());
     sourceName = file.name.replace(/\.[^.]+$/, '');
+    const d = new Date();
+    loadDate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     imageCache.clear();
     setStatus('');
     render();
@@ -159,7 +162,7 @@ function render() {
     tr.querySelector('strong').textContent = prefix;
     tr.querySelector('.skus').textContent = list.map(r => r['SKU Name']).join(', ');
     tr.querySelector('.summary').onclick = e => run(e.target, async () => {
-      const buf = await buildWorkbook(list, s => setStatus(`${prefix} ${s}`));
+      const buf = await buildWorkbook(prefix, list, s => setStatus(`${prefix} ${s}`));
       saveBlob(new Blob([buf]), fileNameFor(prefix));
     });
     tr.querySelector('.plan').onclick = e => run(e.target, async () => {
@@ -180,9 +183,11 @@ const safeName = s => {
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(n)) n += '_';
   return n || 'file';
 };
-const baseName = prefix => safeName(prefix.replace(/-$/, ''));
-const fileNameFor = prefix => baseName(prefix) + '.xlsx';
-const planFileName = prefix => baseName(prefix) + '_purchase_plan.xlsx';
+// Plan key = group + upload date, e.g. MB-20261024. It goes in the purchase plan's notes and in the
+// summary's file and sheet name, so a summary confirmed in LINE can be matched to its BigSeller draft.
+const planKey = prefix => prefix.replace(/-$/, '') + '-' + loadDate;
+const fileNameFor = prefix => safeName(planKey(prefix)) + '.xlsx';
+const planFileName = prefix => safeName(planKey(prefix)) + '_purchase_plan.xlsx';
 
 // ---------- images ----------
 // Fetch and re-encode to JPEG via canvas so Excel always gets a supported format (BigSeller may serve webp).
@@ -219,7 +224,7 @@ async function mapLimit(items, limit, fn) {
 }
 
 // ---------- workbook ----------
-async function buildWorkbook(list, progress) {
+async function buildWorkbook(prefix, list, progress) {
   let done = 0;
   const images = await mapLimit(list, 8, async r => {
     const img = await loadImage(String(r['Image Link']).trim());
@@ -228,7 +233,7 @@ async function buildWorkbook(list, progress) {
   });
 
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Purchase Suggestion', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const ws = wb.addWorksheet(planKey(prefix).replace(/[\\/?*:[\]]/g, '_').slice(0, 31), { views: [{ state: 'frozen', ySplit: 1 }] });
   ws.columns = COLUMNS.map(c => ({ header: c.header, key: c.header, width: c.width }));
   const head = ws.getRow(1);
   head.font = { bold: true };
@@ -317,7 +322,7 @@ function buildPlanWorkbook(prefix, list) {
       qty: Math.ceil(toNum(r['Proposed Qty'])), // template accepts positive integers only
       supplier: blankDash(r['Supplier']),
       warehouse: blankDash(r['Warehouse']),
-      notes: prefix.replace(/-$/, ''),
+      notes: planKey(prefix),
     });
   }
   return wb.xlsx.writeBuffer();
@@ -344,7 +349,7 @@ $('dlAll').onclick = e => run(e.target, async () => {
   const groups = groupRows();
   const zip = new JSZip();
   for (const [i, [prefix, list]] of groups.entries()) {
-    const buf = await buildWorkbook(list, s => setStatus(`File ${i + 1}/${groups.length} (${prefix}) ${s}`));
+    const buf = await buildWorkbook(prefix, list, s => setStatus(`File ${i + 1}/${groups.length} (${prefix}) ${s}`));
     zip.file('Summary/' + fileNameFor(prefix), buf);
     zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(prefix, list));
   }
