@@ -24,11 +24,11 @@
   main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 24px; }
-  #drop { border: 2px dashed var(--line); border-radius: 10px; background: var(--surface);
+  #drop, .drop { border: 2px dashed var(--line); border-radius: 10px; background: var(--surface);
     padding: 36px 16px; text-align: center; cursor: pointer; transition: border-color .15s; }
-  #drop.over, #drop:hover { border-color: var(--accent); }
-  #drop strong { display: block; font-size: 16px; }
-  #drop span { color: var(--muted); font-size: 13px; }
+  #drop.over, #drop:hover, .drop.over, .drop:hover { border-color: var(--accent); }
+  #drop strong, .drop strong { display: block; font-size: 16px; }
+  #drop span, .drop span { color: var(--muted); font-size: 13px; }
   .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 20px 0 12px; }
   .bar .grow { flex: 1; color: var(--muted); font-size: 13px; }
   button { font: inherit; border: 1px solid var(--line); background: var(--surface); color: var(--text);
@@ -48,6 +48,12 @@
   #planned { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px;
     background: var(--warn-bg); font-size: 14px; }
   #planned ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; }
+  #rev { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
+  #rev h2 { font-size: 17px; margin: 0 0 4px; }
+  #rev .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; font-size: 14px; }
+  #rev select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--surface); color: var(--text); }
+  #revInfo { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -73,6 +79,24 @@
     </table>
   </div>
   <div id="status"></div>
+
+  <section id="rev">
+    <h2>สร้างไฟล์แผนสั่งซื้อจากไฟล์สรุปที่ยืนยันแล้ว</h2>
+    <p class="sub">อัปโหลดไฟล์สรุปที่ตรวจและแก้จำนวนแล้ว (แก้ Proposed Qty, ลบแถว หรือเพิ่มคอลัมน์จำนวนใหม่) เพื่อสร้างไฟล์นำเข้า "การวางแผนสั่งซื้อ" ของ BigSeller</p>
+    <div id="revDrop" class="drop">
+      <strong>ลากไฟล์สรุป .xlsx มาวางที่นี่</strong>
+      <span>หรือคลิกเพื่อเลือกไฟล์</span>
+      <input id="revFile" type="file" accept=".xlsx,.xls" hidden>
+    </div>
+    <div id="revOpts" class="hidden">
+      <div class="row">
+        <label>คอลัมน์จำนวน <select id="revQty"></select></label>
+        <label>ภาษา BigSeller <select id="revLang"><option value="en">English</option><option value="th">ไทย</option></select></label>
+        <button class="primary" id="revGo">ดาวน์โหลดไฟล์แผนสั่งซื้อ</button>
+      </div>
+      <div id="revInfo" class="row"></div>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -199,7 +223,7 @@ function render() {
       saveBlob(new Blob([buf]), fileNameFor(prefix));
     });
     tr.querySelector('.plan').onclick = e => run(e.target, async () => {
-      saveBlob(new Blob([await buildPlanWorkbook(prefix, list, bigsellerLang)]), planFileName(prefix));
+      saveBlob(new Blob([await buildPlanWorkbook(planKey(prefix), planItems(list), bigsellerLang)]), planFileName(prefix));
     });
     tbody.appendChild(tr);
   }
@@ -364,7 +388,14 @@ const PLAN_COLUMNS = [
 
 const blankDash = v => { const s = String(v ?? '').trim(); return s === '--' ? '' : s; };
 
-function buildPlanWorkbook(prefix, list, lang) {
+const planItems = list => list.map(r => ({
+  sku: String(r['SKU Name']).trim(),
+  qty: Math.ceil(toNum(r['Proposed Qty'])), // template accepts positive integers only
+  supplier: blankDash(r['Supplier']),
+  warehouse: blankDash(r['Warehouse']),
+}));
+
+function buildPlanWorkbook(key, items, lang) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('sheet1');
   ws.columns = PLAN_COLUMNS.map(c => ({ key: c.key, header: c.header[lang], width: c.width }));
@@ -372,18 +403,76 @@ function buildPlanWorkbook(prefix, list, lang) {
   PLAN_COLUMNS.forEach((c, i) => {
     ws.getCell(1, i + 1).font = { bold: true, color: { argb: c.required ? 'FFFF0000' : 'FF000000' } };
   });
-  for (const r of list) {
-    ws.addRow({
-      id: 1,
-      sku: String(r['SKU Name']).trim(),
-      qty: Math.ceil(toNum(r['Proposed Qty'])), // template accepts positive integers only
-      supplier: blankDash(r['Supplier']),
-      warehouse: blankDash(r['Warehouse']),
-      notes: planKey(prefix),
-    });
-  }
+  for (const it of items) ws.addRow({ id: 1, ...it, notes: key });
   return wb.xlsx.writeBuffer();
 }
+
+// ---------- reverse: confirmed summary -> purchase plan ----------
+let rev = null; // { key, rows: [{ header: value }], headers: [...] }
+const SUMMARY_HEADERS = COLUMNS.map(c => c.label.split('\n')[0]);
+const revDrop = $('revDrop');
+revDrop.onclick = () => $('revFile').click();
+$('revFile').onchange = e => e.target.files[0] && loadSummary(e.target.files[0]);
+revDrop.ondragover = e => { e.preventDefault(); revDrop.classList.add('over'); };
+revDrop.ondragleave = () => revDrop.classList.remove('over');
+revDrop.ondrop = e => { e.preventDefault(); revDrop.classList.remove('over'); e.dataTransfer.files[0] && loadSummary(e.dataTransfer.files[0]); };
+
+async function loadSummary(file) {
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+    // Summary headers are bilingual ("Proposed Qty\n建议采购量"); the first line is the key.
+    const rows = data.map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [k.split('\n')[0].trim(), v])));
+    const headers = rows.length ? Object.keys(rows[0]).filter(h => h && !h.startsWith('__EMPTY')) : [];
+    if (!headers.includes('SKU Name')) throw new Error('ไม่พบคอลัมน์ SKU Name');
+    const extra = headers.filter(h => !SUMMARY_HEADERS.includes(h));
+    const qtyHeaders = headers.filter(h => !['Image', 'SKU Name', 'Title'].includes(h));
+    if (!qtyHeaders.length) throw new Error('ไม่พบคอลัมน์จำนวน');
+    rev = { key: wb.SheetNames[0].trim() || safeName(file.name.replace(/\.[^.]+$/, '')), rows };
+    $('revQty').innerHTML = '';
+    for (const h of qtyHeaders) $('revQty').add(new Option(h, h));
+    // A column added by the reviewers holds their final quantities; otherwise use Proposed Qty.
+    $('revQty').value = extra.length ? extra[extra.length - 1] : qtyHeaders.includes('Proposed Qty') ? 'Proposed Qty' : qtyHeaders[0];
+    $('revOpts').classList.remove('hidden');
+    setStatus('');
+    revPreview();
+  } catch (err) {
+    rev = null;
+    $('revOpts').classList.add('hidden');
+    setStatus('อ่านไฟล์สรุปไม่ได้: ' + err.message, true);
+  }
+}
+
+// Sum quantities per SKU; blank, zero and non-numeric rows are dropped.
+function revItems() {
+  const qtyCol = $('revQty').value;
+  const sums = new Map();
+  let skipped = 0;
+  for (const r of rev.rows) {
+    const sku = String(r['SKU Name']).trim();
+    if (!sku) continue;
+    const q = Math.ceil(toNum(r[qtyCol]));
+    if (!(q > 0)) { skipped++; continue; }
+    sums.set(sku, (sums.get(sku) || 0) + q);
+  }
+  return { items: [...sums].map(([sku, qty]) => ({ sku, qty })), skipped };
+}
+
+function revPreview() {
+  if (!rev) return;
+  const { items, skipped } = revItems();
+  const total = items.reduce((n, i) => n + i.qty, 0);
+  $('revInfo').textContent = `${items.length} SKU · รวม ${total} ชิ้น` + (skipped ? ` · ข้าม ${skipped} แถวที่จำนวนว่างหรือ 0` : '') + ` · รหัสแผน ${rev.key}`;
+  $('revGo').disabled = !items.length;
+}
+$('revQty').onchange = revPreview;
+
+$('revGo').onclick = e => run(e.target, async () => {
+  const { items } = revItems();
+  if (!items.length) throw new Error('ไม่มี SKU ที่มีจำนวนมากกว่า 0');
+  const buf = await buildPlanWorkbook(rev.key, items, $('revLang').value);
+  saveBlob(new Blob([buf]), safeName(rev.key) + '_purchase_plan.xlsx');
+});
 
 // ---------- download ----------
 function saveBlob(blob, name) {
@@ -399,7 +488,7 @@ async function run(btn, task) {
   buttons.forEach(b => b.disabled = true);
   try { await task(); setStatus('เสร็จแล้ว'); }
   catch (err) { setStatus('ไม่สำเร็จ: ' + err.message, true); }
-  finally { buttons.forEach(b => b.disabled = false); }
+  finally { buttons.forEach(b => b.disabled = false); revPreview(); }
 }
 
 $('dlAll').onclick = e => run(e.target, async () => {
@@ -408,7 +497,7 @@ $('dlAll').onclick = e => run(e.target, async () => {
   for (const [i, [prefix, list]] of groups.entries()) {
     const buf = await buildWorkbook(prefix, list, s => setStatus(`ไฟล์ ${i + 1}/${groups.length} (${prefix}) ${s}`));
     zip.file('Summary/' + fileNameFor(prefix), buf);
-    zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(prefix, list, bigsellerLang));
+    zip.file('Purchase_plan/' + planFileName(prefix), await buildPlanWorkbook(planKey(prefix), planItems(list), bigsellerLang));
   }
   setStatus('กำลังรวมไฟล์ zip…');
   saveBlob(await zip.generateAsync({ type: 'blob' }), safeName(sourceName) + '_split.zip');
